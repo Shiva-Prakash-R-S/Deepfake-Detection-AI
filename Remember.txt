@@ -1,0 +1,6 @@
+ cd frontend 
+ npm run dev 
+
+
+cd backend 
+python add.py

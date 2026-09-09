@@ -1,8 +1,7 @@
 import os
 import csv
-
-import torch
 import numpy as np
+import torch
 import matplotlib.pyplot as plt
 
 from sklearn.metrics import (
@@ -15,7 +14,7 @@ from sklearn.metrics import (
     classification_report,
     roc_curve,
     precision_recall_curve,
-    auc
+    average_precision_score
 )
 
 from backend.models.deepfake_model import DeepfakeDetector
@@ -23,9 +22,8 @@ from backend.models.deepfake_model import DeepfakeDetector
 from utils.dataset_loader import test_loader
 
 from utils.config import (
-    CLASSES,
-    CURRENT_CHECKPOINT,
-    REPORTS_DIR
+    V4_CHECKPOINT,
+    V4_REPORTS_DIR
 )
 
 
@@ -43,47 +41,75 @@ print("\nUsing Device:", device)
 
 
 # ============================================================
-# LOAD V3 MODEL
+# CHECK MODEL
 # ============================================================
 
-if not os.path.exists(CURRENT_CHECKPOINT):
+if not os.path.exists(V4_CHECKPOINT):
 
     raise FileNotFoundError(
-        f"\nV3 model not found:\n"
-        f"{CURRENT_CHECKPOINT}\n\n"
-        f"Run train_v3.py first."
+        f"\nV4 model not found:\n"
+        f"{V4_CHECKPOINT}\n\n"
+        f"Make sure V4 training has completed."
     )
 
+
+# ============================================================
+# LOAD MODEL
+# ============================================================
 
 model = DeepfakeDetector().to(device)
 
-model.load_state_dict(
-    torch.load(
-        CURRENT_CHECKPOINT,
-        map_location=device
-    )
+checkpoint = torch.load(
+    V4_CHECKPOINT,
+    map_location=device,
+    weights_only=False
 )
+
+if isinstance(checkpoint, dict) and "model_state_dict" in checkpoint:
+
+    model.load_state_dict(
+        checkpoint["model_state_dict"]
+    )
+
+else:
+
+    model.load_state_dict(
+        checkpoint
+    )
 
 model.eval()
 
-print("✅ V3 Model Loaded Successfully!")
+print(
+    "\n✅ V4 Model Loaded Successfully!"
+)
+
+print(
+    "Model:",
+    V4_CHECKPOINT
+)
 
 
 # ============================================================
-# EVALUATION
+# CREATE REPORT DIRECTORY
 # ============================================================
+
+os.makedirs(
+    V4_REPORTS_DIR,
+    exist_ok=True
+)
+
+
+# ============================================================
+# PREDICTION
+# ============================================================
+
+print(
+    "\nEvaluating V4 test dataset..."
+)
 
 all_labels = []
-
 all_predictions = []
-
-all_real_probabilities = []
-
 all_fake_probabilities = []
-
-
-print("\nEvaluating test dataset...")
-
 
 with torch.no_grad():
 
@@ -91,7 +117,9 @@ with torch.no_grad():
 
         images = images.to(device)
 
-        outputs = model(images)
+        outputs = model(
+            images
+        )
 
         probabilities = torch.softmax(
             outputs,
@@ -104,12 +132,19 @@ with torch.no_grad():
         )
 
         all_labels.extend(
-            labels.numpy()
+            labels.cpu().numpy()
         )
 
         all_predictions.extend(
             predictions.cpu().numpy()
         )
+
+        # Class index:
+        # 0 = fake
+        # 1 = real
+        #
+        # For ROC-AUC we use probability of REAL
+        # because label 1 = real.
 
         all_fake_probabilities.extend(
             probabilities[:, 0]
@@ -117,16 +152,6 @@ with torch.no_grad():
             .numpy()
         )
 
-        all_real_probabilities.extend(
-            probabilities[:, 1]
-            .cpu()
-            .numpy()
-        )
-
-
-# ============================================================
-# CONVERT TO NUMPY
-# ============================================================
 
 labels = np.array(
     all_labels
@@ -140,9 +165,12 @@ fake_probabilities = np.array(
     all_fake_probabilities
 )
 
-real_probabilities = np.array(
-    all_real_probabilities
-)
+
+# ============================================================
+# REAL PROBABILITY
+# ============================================================
+
+real_probabilities = 1.0 - fake_probabilities
 
 
 # ============================================================
@@ -172,9 +200,52 @@ f1 = f1_score(
     zero_division=0
 )
 
-auc_score = roc_auc_score(
+roc_auc = roc_auc_score(
     labels,
     real_probabilities
+)
+
+pr_auc = average_precision_score(
+    labels,
+    real_probabilities
+)
+
+
+# ============================================================
+# RESULTS
+# ============================================================
+
+print("\n")
+print("=" * 60)
+
+print(
+    "          V4 EVALUATION RESULTS"
+)
+
+print("=" * 60)
+
+print(
+    f"Accuracy  : {accuracy * 100:.2f}%"
+)
+
+print(
+    f"Precision : {precision * 100:.2f}%"
+)
+
+print(
+    f"Recall    : {recall * 100:.2f}%"
+)
+
+print(
+    f"F1 Score  : {f1 * 100:.2f}%"
+)
+
+print(
+    f"ROC-AUC   : {roc_auc:.4f}"
+)
+
+print(
+    f"PR-AUC    : {pr_auc:.4f}"
 )
 
 
@@ -192,57 +263,6 @@ report = classification_report(
     zero_division=0
 )
 
-
-# ============================================================
-# CREATE REPORTS DIRECTORY
-# ============================================================
-
-os.makedirs(
-    REPORTS_DIR,
-    exist_ok=True
-)
-
-
-# ============================================================
-# TERMINAL RESULTS
-# ============================================================
-
-print("\n")
-
-print("=" * 60)
-
-print(
-    "             V3 EVALUATION RESULTS"
-)
-
-print("=" * 60)
-
-print(
-    f"Test Images : {len(labels)}"
-)
-
-print(
-    f"Accuracy    : {accuracy * 100:.2f}%"
-)
-
-print(
-    f"Precision   : {precision * 100:.2f}%"
-)
-
-print(
-    f"Recall      : {recall * 100:.2f}%"
-)
-
-print(
-    f"F1 Score    : {f1 * 100:.2f}%"
-)
-
-print(
-    f"ROC-AUC     : {auc_score:.4f}"
-)
-
-print("-" * 60)
-
 print(
     "\nClassification Report\n"
 )
@@ -251,14 +271,9 @@ print(
     report
 )
 
-
-# ============================================================
-# SAVE CLASSIFICATION REPORT
-# ============================================================
-
 classification_report_path = os.path.join(
-    REPORTS_DIR,
-    "classification_report_v3.txt"
+    V4_REPORTS_DIR,
+    "classification_report_v4.txt"
 )
 
 with open(
@@ -267,92 +282,8 @@ with open(
 ) as file:
 
     file.write(
-        "V3 DEEPFAKE DETECTION EVALUATION\n"
-    )
-
-    file.write(
-        "=" * 50 + "\n\n"
-    )
-
-    file.write(
-        f"Test Images : {len(labels)}\n"
-    )
-
-    file.write(
-        f"Accuracy    : {accuracy * 100:.2f}%\n"
-    )
-
-    file.write(
-        f"Precision   : {precision * 100:.2f}%\n"
-    )
-
-    file.write(
-        f"Recall      : {recall * 100:.2f}%\n"
-    )
-
-    file.write(
-        f"F1 Score    : {f1 * 100:.2f}%\n"
-    )
-
-    file.write(
-        f"ROC-AUC     : {auc_score:.4f}\n\n"
-    )
-
-    file.write(
-        "Classification Report\n\n"
-    )
-
-    file.write(
         report
     )
-
-
-# ============================================================
-# SAVE METRICS CSV
-# ============================================================
-
-metrics_path = os.path.join(
-    REPORTS_DIR,
-    "metrics_v3.csv"
-)
-
-with open(
-    metrics_path,
-    "w",
-    newline=""
-) as file:
-
-    writer = csv.writer(file)
-
-    writer.writerow([
-        "Metric",
-        "Value"
-    ])
-
-    writer.writerow([
-        "Accuracy",
-        accuracy
-    ])
-
-    writer.writerow([
-        "Precision",
-        precision
-    ])
-
-    writer.writerow([
-        "Recall",
-        recall
-    ])
-
-    writer.writerow([
-        "F1 Score",
-        f1
-    ])
-
-    writer.writerow([
-        "ROC-AUC",
-        auc_score
-    ])
 
 
 # ============================================================
@@ -364,9 +295,13 @@ cm = confusion_matrix(
     predictions
 )
 
-print("\nConfusion Matrix:")
+print(
+    "Confusion Matrix:"
+)
 
-print(cm)
+print(
+    cm
+)
 
 
 plt.figure(
@@ -399,17 +334,12 @@ plt.ylabel(
 )
 
 plt.title(
-    "V3 Confusion Matrix"
+    "V4 Confusion Matrix"
 )
 
+for i in range(2):
 
-for i in range(
-    cm.shape[0]
-):
-
-    for j in range(
-        cm.shape[1]
-    ):
+    for j in range(2):
 
         plt.text(
             j,
@@ -419,17 +349,15 @@ for i in range(
             va="center"
         )
 
-
 plt.tight_layout()
 
 confusion_matrix_path = os.path.join(
-    REPORTS_DIR,
-    "confusion_matrix_v3.png"
+    V4_REPORTS_DIR,
+    "confusion_matrix_v4.png"
 )
 
 plt.savefig(
-    confusion_matrix_path,
-    dpi=300
+    confusion_matrix_path
 )
 
 plt.close()
@@ -451,7 +379,7 @@ plt.figure(
 plt.plot(
     fpr,
     tpr,
-    label=f"AUC = {auc_score:.4f}"
+    label=f"AUC = {roc_auc:.4f}"
 )
 
 plt.plot(
@@ -469,21 +397,20 @@ plt.ylabel(
 )
 
 plt.title(
-    "V3 ROC Curve"
+    "V4 ROC Curve"
 )
 
 plt.legend()
 
 plt.tight_layout()
 
-roc_curve_path = os.path.join(
-    REPORTS_DIR,
-    "roc_curve_v3.png"
+roc_path = os.path.join(
+    V4_REPORTS_DIR,
+    "roc_curve_v4.png"
 )
 
 plt.savefig(
-    roc_curve_path,
-    dpi=300
+    roc_path
 )
 
 plt.close()
@@ -493,18 +420,10 @@ plt.close()
 # PRECISION-RECALL CURVE
 # ============================================================
 
-precision_values, recall_values, _ = (
-    precision_recall_curve(
-        labels,
-        real_probabilities
-    )
+precision_values, recall_values, _ = precision_recall_curve(
+    labels,
+    real_probabilities
 )
-
-pr_auc = auc(
-    recall_values,
-    precision_values
-)
-
 
 plt.figure(
     figsize=(6, 5)
@@ -525,7 +444,7 @@ plt.ylabel(
 )
 
 plt.title(
-    "V3 Precision-Recall Curve"
+    "V4 Precision-Recall Curve"
 )
 
 plt.legend()
@@ -533,28 +452,81 @@ plt.legend()
 plt.tight_layout()
 
 pr_curve_path = os.path.join(
-    REPORTS_DIR,
-    "precision_recall_curve_v3.png"
+    V4_REPORTS_DIR,
+    "precision_recall_curve_v4.png"
 )
 
 plt.savefig(
-    pr_curve_path,
-    dpi=300
+    pr_curve_path
 )
 
 plt.close()
 
 
 # ============================================================
-# FINAL OUTPUT
+# METRICS CSV
+# ============================================================
+
+metrics_path = os.path.join(
+    V4_REPORTS_DIR,
+    "metrics_v4.csv"
+)
+
+with open(
+    metrics_path,
+    "w",
+    newline=""
+) as file:
+
+    writer = csv.writer(
+        file
+    )
+
+    writer.writerow([
+        "Metric",
+        "Value"
+    ])
+
+    writer.writerow([
+        "Accuracy",
+        accuracy
+    ])
+
+    writer.writerow([
+        "Precision",
+        precision
+    ])
+
+    writer.writerow([
+        "Recall",
+        recall
+    ])
+
+    writer.writerow([
+        "F1 Score",
+        f1
+    ])
+
+    writer.writerow([
+        "ROC-AUC",
+        roc_auc
+    ])
+
+    writer.writerow([
+        "PR-AUC",
+        pr_auc
+    ])
+
+
+# ============================================================
+# FINISHED
 # ============================================================
 
 print("\n")
-
 print("=" * 60)
 
 print(
-    "       V3 EVALUATION COMPLETED"
+    "       V4 EVALUATION COMPLETED"
 )
 
 print("=" * 60)
@@ -562,29 +534,29 @@ print("=" * 60)
 print("\nReports saved:")
 
 print(
-    "├── classification_report_v3.txt"
+    "├── classification_report_v4.txt"
 )
 
 print(
-    "├── metrics_v3.csv"
+    "├── metrics_v4.csv"
 )
 
 print(
-    "├── confusion_matrix_v3.png"
+    "├── confusion_matrix_v4.png"
 )
 
 print(
-    "├── roc_curve_v3.png"
+    "├── roc_curve_v4.png"
 )
 
 print(
-    "└── precision_recall_curve_v3.png"
+    "└── precision_recall_curve_v4.png"
 )
-
-print("\n")
 
 print(
-    f"PR-AUC : {pr_auc:.4f}"
+    f"\nReports directory:"
 )
 
-print("=" * 60)
+print(
+    V4_REPORTS_DIR
+)

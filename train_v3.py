@@ -1,31 +1,38 @@
 import os
 import csv
-
 import torch
 import torch.nn as nn
 import torch.optim as optim
+import matplotlib.pyplot as plt
 
 from tqdm import tqdm
-
 from torch.optim.lr_scheduler import ReduceLROnPlateau
 
-from backend.models.deepfake_model import (
-    DeepfakeDetector
-)
-
-from utils.dataset_loader import (
-    train_loader,
-    valid_loader
-)
-
+from models.deepfake_model import DeepfakeDetector
+from utils.dataset_loader import train_loader, valid_loader
 from utils.config import (
     CURRENT_CHECKPOINT,
     PREVIOUS_CHECKPOINT,
     REPORTS_DIR,
-    EPOCHS,
     LEARNING_RATE,
     WEIGHT_DECAY,
-    EARLY_STOPPING_PATIENCE
+    EPOCHS,
+    EARLY_STOPPING_PATIENCE,
+)
+
+
+# ============================================================
+# DIRECTORIES
+# ============================================================
+
+os.makedirs(
+    os.path.dirname(CURRENT_CHECKPOINT),
+    exist_ok=True
+)
+
+os.makedirs(
+    REPORTS_DIR,
+    exist_ok=True
 )
 
 
@@ -34,15 +41,16 @@ from utils.config import (
 # ============================================================
 
 device = torch.device(
-    "cuda"
-    if torch.cuda.is_available()
-    else "cpu"
+    "cuda" if torch.cuda.is_available() else "cpu"
 )
 
+print("\n")
+print("=" * 60)
+print("        DEEPFAKE DETECTION V3 TRAINING")
+print("=" * 60)
 
 print(
-    "\nUsing Device :",
-    device
+    f"Using Device : {device}"
 )
 
 
@@ -50,18 +58,14 @@ print(
 # MODEL
 # ============================================================
 
-model = DeepfakeDetector().to(
-    device
-)
+model = DeepfakeDetector().to(device)
 
 
 # ============================================================
-# LOAD V2
+# LOAD V2 MODEL IF AVAILABLE
 # ============================================================
 
-if os.path.exists(
-    PREVIOUS_CHECKPOINT
-):
+if os.path.exists(PREVIOUS_CHECKPOINT):
 
     try:
 
@@ -72,16 +76,17 @@ if os.path.exists(
             )
         )
 
-
         print(
-            "\n✅ V2 model loaded successfully."
+            "\n✅ Previous V2 model loaded:"
         )
 
-
         print(
-            "Starting V3 fine-tuning..."
+            PREVIOUS_CHECKPOINT
         )
 
+        print(
+            "V3 fine-tuning will continue from V2."
+        )
 
     except Exception as error:
 
@@ -90,22 +95,21 @@ if os.path.exists(
         )
 
         print(
-            "Error:",
-            error
+            f"Reason: {error}"
         )
 
         print(
-            "Training V3 from scratch..."
+            "Training V3 from scratch."
         )
 
 else:
 
     print(
-        "\n⚠ best_model_v2.pth not found."
+        "\n⚠ No V2 model found."
     )
 
     print(
-        "Training V3 from scratch..."
+        "Training V3 from scratch."
     )
 
 
@@ -128,7 +132,7 @@ optimizer = optim.AdamW(
 
 
 # ============================================================
-# SCHEDULER
+# LEARNING RATE SCHEDULER
 # ============================================================
 
 scheduler = ReduceLROnPlateau(
@@ -140,47 +144,23 @@ scheduler = ReduceLROnPlateau(
 
 
 # ============================================================
-# REPORTS
+# TRAINING VARIABLES
 # ============================================================
-
-os.makedirs(
-    REPORTS_DIR,
-    exist_ok=True
-)
-
-
-# ============================================================
-# HISTORY
-# ============================================================
-
-history = []
 
 best_accuracy = 0.0
 
 early_stop_counter = 0
 
+history = []
+
 
 # ============================================================
-# TRAINING
+# TRAINING LOOP
 # ============================================================
 
-print("\n")
-
-print("=" * 60)
-
-print(
-    "       DEEPFAKE DETECTION V3"
-)
-
-print("=" * 60)
-
-
-for epoch in range(
-    EPOCHS
-):
+for epoch in range(EPOCHS):
 
     print("\n")
-
     print("=" * 60)
 
     print(
@@ -191,11 +171,10 @@ for epoch in range(
 
 
     # ========================================================
-    # TRAIN
+    # TRAINING
     # ========================================================
 
     model.train()
-
 
     train_loss = 0.0
 
@@ -204,30 +183,36 @@ for epoch in range(
     train_total = 0
 
 
-    progress = tqdm(
+    train_bar = tqdm(
         train_loader,
         desc="Training"
     )
 
 
-    for images, labels in progress:
+    for images, labels in train_bar:
 
-        images = images.to(
-            device
-        )
+        images = images.to(device)
 
-        labels = labels.to(
-            device
-        )
+        labels = labels.to(device)
 
+
+        # ----------------------------------------------------
+        # Clear gradients
+        # ----------------------------------------------------
 
         optimizer.zero_grad()
 
 
-        outputs = model(
-            images
-        )
+        # ----------------------------------------------------
+        # Forward pass
+        # ----------------------------------------------------
 
+        outputs = model(images)
+
+
+        # ----------------------------------------------------
+        # Loss
+        # ----------------------------------------------------
 
         loss = criterion(
             outputs,
@@ -235,8 +220,16 @@ for epoch in range(
         )
 
 
+        # ----------------------------------------------------
+        # Backpropagation
+        # ----------------------------------------------------
+
         loss.backward()
 
+
+        # ----------------------------------------------------
+        # Gradient clipping
+        # ----------------------------------------------------
 
         torch.nn.utils.clip_grad_norm_(
             model.parameters(),
@@ -244,8 +237,16 @@ for epoch in range(
         )
 
 
+        # ----------------------------------------------------
+        # Update weights
+        # ----------------------------------------------------
+
         optimizer.step()
 
+
+        # ----------------------------------------------------
+        # Statistics
+        # ----------------------------------------------------
 
         train_loss += loss.item()
 
@@ -264,10 +265,14 @@ for epoch in range(
         ).sum().item()
 
 
-        progress.set_postfix(
+        train_bar.set_postfix(
             loss=f"{loss.item():.4f}"
         )
 
+
+    # ========================================================
+    # TRAINING METRICS
+    # ========================================================
 
     avg_train_loss = (
         train_loss /
@@ -276,9 +281,10 @@ for epoch in range(
 
 
     train_accuracy = (
+        100.0 *
         train_correct /
         train_total
-    ) * 100
+    )
 
 
     # ========================================================
@@ -287,30 +293,23 @@ for epoch in range(
 
     model.eval()
 
+    validation_loss = 0.0
 
-    valid_loss = 0.0
+    validation_correct = 0
 
-    valid_correct = 0
-
-    valid_total = 0
+    validation_total = 0
 
 
     with torch.no_grad():
 
         for images, labels in valid_loader:
 
-            images = images.to(
-                device
-            )
+            images = images.to(device)
 
-            labels = labels.to(
-                device
-            )
+            labels = labels.to(device)
 
 
-            outputs = model(
-                images
-            )
+            outputs = model(images)
 
 
             loss = criterion(
@@ -319,7 +318,7 @@ for epoch in range(
             )
 
 
-            valid_loss += loss.item()
+            validation_loss += loss.item()
 
 
             predictions = torch.argmax(
@@ -328,101 +327,97 @@ for epoch in range(
             )
 
 
-            valid_total += labels.size(0)
+            validation_total += labels.size(0)
 
 
-            valid_correct += (
+            validation_correct += (
                 predictions == labels
             ).sum().item()
 
 
-    avg_valid_loss = (
-        valid_loss /
+    # ========================================================
+    # VALIDATION METRICS
+    # ========================================================
+
+    avg_validation_loss = (
+        validation_loss /
         len(valid_loader)
     )
 
 
-    valid_accuracy = (
-        valid_correct /
-        valid_total
-    ) * 100
+    validation_accuracy = (
+        100.0 *
+        validation_correct /
+        validation_total
+    )
 
 
     # ========================================================
-    # LR
+    # LEARNING RATE
     # ========================================================
 
     scheduler.step(
-        valid_accuracy
+        validation_accuracy
     )
 
 
     current_lr = (
-        optimizer
-        .param_groups[0]
-        ["lr"]
+        optimizer.param_groups[0]["lr"]
     )
 
 
     # ========================================================
-    # HISTORY
+    # SAVE HISTORY
     # ========================================================
 
     history.append({
 
-        "epoch":
-            epoch + 1,
+        "epoch": epoch + 1,
 
         "train_loss":
             avg_train_loss,
 
         "validation_loss":
-            avg_valid_loss,
+            avg_validation_loss,
 
         "train_accuracy":
             train_accuracy,
 
         "validation_accuracy":
-            valid_accuracy,
+            validation_accuracy,
 
         "learning_rate":
             current_lr
-
     })
 
 
     # ========================================================
-    # PRINT
+    # PRINT RESULTS
     # ========================================================
 
-    print("\nResults")
-
+    print("\n")
+    print("Results")
     print("-" * 60)
-
 
     print(
         f"Train Loss          : "
         f"{avg_train_loss:.4f}"
     )
 
-
     print(
         f"Validation Loss     : "
-        f"{avg_valid_loss:.4f}"
+        f"{avg_validation_loss:.4f}"
     )
-
 
     print(
         f"Train Accuracy      : "
         f"{train_accuracy:.2f}%"
     )
 
-
     print(
         f"Validation Accuracy : "
-        f"{valid_accuracy:.2f}%"
+        f"{validation_accuracy:.2f}%"
     )
-
 
     print(
         f"Learning Rate       : "
@@ -431,12 +426,12 @@ for epoch in range(
 
 
     # ========================================================
-    # BEST MODEL
+    # SAVE BEST MODEL
     # ========================================================
 
-    if valid_accuracy > best_accuracy:
+    if validation_accuracy > best_accuracy:
 
-        best_accuracy = valid_accuracy
+        best_accuracy = validation_accuracy
 
         early_stop_counter = 0
 
@@ -447,8 +442,16 @@ for epoch in range(
         )
 
 
+        print("\n")
+        print("✅ BEST V3 MODEL SAVED!")
+
         print(
-            "\n✅ Best V3 Model Saved!"
+            f"Validation Accuracy : "
+            f"{best_accuracy:.2f}%"
+        )
+
+        print(
+            f"Model : {CURRENT_CHECKPOINT}"
         )
 
 
@@ -464,20 +467,25 @@ for epoch in range(
         )
 
 
+        # ----------------------------------------------------
+        # Early stopping
+        # ----------------------------------------------------
+
         if (
             early_stop_counter >=
             EARLY_STOPPING_PATIENCE
         ):
 
+            print("\n")
             print(
-                "\n🛑 Early Stopping Triggered!"
+                "🛑 Early Stopping Triggered!"
             )
 
             break
 
 
 # ============================================================
-# SAVE HISTORY
+# SAVE TRAINING HISTORY
 # ============================================================
 
 history_file = os.path.join(
@@ -504,9 +512,7 @@ with open(
         ]
     )
 
-
     writer.writeheader()
-
 
     writer.writerows(
         history
@@ -514,42 +520,177 @@ with open(
 
 
 # ============================================================
-# FINISHED
+# CREATE GRAPHS
+# ============================================================
+
+epochs_completed = [
+    row["epoch"]
+    for row in history
+]
+
+
+train_losses = [
+    row["train_loss"]
+    for row in history
+]
+
+
+validation_losses = [
+    row["validation_loss"]
+    for row in history
+]
+
+
+train_accuracies = [
+    row["train_accuracy"]
+    for row in history
+]
+
+
+validation_accuracies = [
+    row["validation_accuracy"]
+    for row in history
+]
+
+
+# ============================================================
+# LOSS GRAPH
+# ============================================================
+
+plt.figure(
+    figsize=(8, 5)
+)
+
+plt.plot(
+    epochs_completed,
+    train_losses,
+    marker="o",
+    label="Training Loss"
+)
+
+plt.plot(
+    epochs_completed,
+    validation_losses,
+    marker="o",
+    label="Validation Loss"
+)
+
+plt.xlabel("Epoch")
+
+plt.ylabel("Loss")
+
+plt.title(
+    "V3 Training and Validation Loss"
+)
+
+plt.legend()
+
+plt.grid(True)
+
+plt.tight_layout()
+
+plt.savefig(
+    os.path.join(
+        REPORTS_DIR,
+        "loss_v3.png"
+    )
+)
+
+plt.close()
+
+
+# ============================================================
+# ACCURACY GRAPH
+# ============================================================
+
+plt.figure(
+    figsize=(8, 5)
+)
+
+plt.plot(
+    epochs_completed,
+    train_accuracies,
+    marker="o",
+    label="Training Accuracy"
+)
+
+plt.plot(
+    epochs_completed,
+    validation_accuracies,
+    marker="o",
+    label="Validation Accuracy"
+)
+
+plt.xlabel("Epoch")
+
+plt.ylabel("Accuracy (%)")
+
+plt.title(
+    "V3 Training and Validation Accuracy"
+)
+
+plt.legend()
+
+plt.grid(True)
+
+plt.tight_layout()
+
+plt.savefig(
+    os.path.join(
+        REPORTS_DIR,
+        "accuracy_v3.png"
+    )
+)
+
+plt.close()
+
+
+# ============================================================
+# FINAL OUTPUT
 # ============================================================
 
 print("\n")
-
 print("=" * 60)
-
-print(
-    "       TRAINING COMPLETED"
-)
-
+print("           V3 TRAINING COMPLETED")
 print("=" * 60)
-
 
 print(
     f"Best Validation Accuracy : "
     f"{best_accuracy:.2f}%"
 )
 
-
 print(
-    "Model Saved:"
+    f"\nBest Model:"
 )
 
 print(
     CURRENT_CHECKPOINT
 )
 
-
 print(
-    "History Saved:"
+    "\nTraining History:"
 )
 
 print(
     history_file
 )
 
+print(
+    "\nGraphs:"
+)
+
+print(
+    os.path.join(
+        REPORTS_DIR,
+        "loss_v3.png"
+    )
+)
+
+print(
+    os.path.join(
+        REPORTS_DIR,
+        "accuracy_v3.png"
+    )
+)
 
 print("=" * 60)
